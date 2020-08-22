@@ -121,7 +121,7 @@ class AddLocalShapeDescriptor(BatchFilter):
 
         descriptor = self.extractor.get_descriptors(
             segmentation_array.data,
-            voxel_roi_in_seg)
+            roi=voxel_roi_in_seg)
 
         # create descriptor array
         descriptor_spec = self.spec[self.descriptor].copy()
