@@ -234,6 +234,9 @@ class LsdExtractor(object):
         # clip outliers
         np.clip(descriptors, 0.0, 1.0, out=descriptors)
 
+        # convert to uint8
+        descriptors = (descriptors * 255).astype(np.uint8)
+
         return descriptors
 
     def __get_stats(self, coords, mask, sigma_voxel, roi):
