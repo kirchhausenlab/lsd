@@ -3,6 +3,7 @@ import numpy as np
 import time
 import logging
 from scipy.ndimage import gaussian_filter
+from gputools import gaussian_filter as gaussian_filter_gpu
 from scipy.ndimage.filters import convolve
 from numpy.lib.stride_tricks import as_strided
 
@@ -15,7 +16,8 @@ def get_local_shape_descriptors(
         roi=None,
         labels=None,
         mode='gaussian',
-        downsample=1):
+        downsample=1,
+        use_gpu=False):
     '''
     Compute local shape descriptors for the given segmentation.
 
@@ -54,8 +56,12 @@ def get_local_shape_descriptors(
 
             Compute the local shape descriptor on a downsampled volume for
             faster processing. Defaults to 1 (no downsampling).
+
+        use_gpu (``bool``, optional):
+
+            Apply gaussian filter on gpu if set.
     '''
-    return LsdExtractor(sigma, mode, downsample).get_descriptors(
+    return LsdExtractor(sigma, mode, downsample, use_gpu).get_descriptors(
         segmentation,
         voxel_size,
         roi,
@@ -63,7 +69,7 @@ def get_local_shape_descriptors(
 
 class LsdExtractor(object):
 
-    def __init__(self, sigma, mode='gaussian', downsample=1):
+    def __init__(self, sigma, mode='gaussian', downsample=1, use_gpu=False):
         '''
         Create an extractor for local shape descriptors. The extractor caches
         the data repeatedly needed for segmentations of the same size. If this
@@ -88,10 +94,15 @@ class LsdExtractor(object):
 
                 Compute the local shape descriptor on a downsampled volume for
                 faster processing. Defaults to 1 (no downsampling).
+
+            use_gpu (``bool``, optional):
+
+                Apply gaussian filter on gpu if set.
         '''
         self.sigma = sigma
         self.mode = mode
         self.downsample = downsample
+        self.use_gpu = use_gpu
         self.coords = {}
 
     def get_descriptors(
@@ -186,7 +197,7 @@ class LsdExtractor(object):
             sub_mask = mask[::df, ::df, ::df]
             logger.debug("Downsampled label mask %s", sub_mask.shape)
 
-            sub_count, sub_mean_offset, sub_variance, sub_pearson = self.__get_stats(
+            sub_count, sub_mean_offset, sub_variance, sub_pearson = self.get_stats(
                 coords,
                 sub_mask,
                 sub_sigma_voxel,
@@ -239,7 +250,7 @@ class LsdExtractor(object):
 
         return descriptors
 
-    def __get_stats(self, coords, mask, sigma_voxel, roi):
+    def get_stats(self, coords, mask, sigma_voxel, roi):
 
         # mask for object
         masked_coords = coords*mask
@@ -247,7 +258,7 @@ class LsdExtractor(object):
         # number of inside voxels
         logger.debug("Counting inside voxels...")
         start = time.time()
-        count = self.__aggregate(mask, sigma_voxel, self.mode, roi)
+        count = self.aggregate(mask, sigma_voxel, self.mode, roi)
         # avoid division by zero
         count[count==0] = 1
         logger.debug("%f seconds", time.time() - start)
@@ -256,7 +267,7 @@ class LsdExtractor(object):
         logger.debug("Computing mean position of inside voxels...")
         start = time.time()
         mean = np.array([
-            self.__aggregate(masked_coords[d], sigma_voxel, self.mode, roi)
+            self.aggregate(masked_coords[d], sigma_voxel, self.mode, roi)
             for d in range(3)])
         mean /= count
         logger.debug("%f seconds", time.time() - start)
@@ -269,7 +280,7 @@ class LsdExtractor(object):
         logger.debug("Computing covariance...")
         coords_outer = self.__outer_product(masked_coords)
         covariance = np.array([
-            self.__aggregate(coords_outer[d], sigma_voxel, self.mode, roi)
+            self.aggregate(coords_outer[d], sigma_voxel, self.mode, roi)
             # remove duplicate entries in covariance
             # 0 1 2
             # 3 4 5
@@ -305,7 +316,7 @@ class LsdExtractor(object):
         dist2 = r2[:, None, None] + r2[:, None] + r2
         return (dist2 <= radius**2).astype(np.float32)
 
-    def __aggregate(self, array, sigma, mode='gaussian', roi=None):
+    def aggregate(self, array, sigma, mode='gaussian', roi=None):
 
         if roi is None:
             roi_slices = (slice(None),)
@@ -314,11 +325,17 @@ class LsdExtractor(object):
 
         if mode == 'gaussian':
 
-            return gaussian_filter(
-                array,
-                sigma=sigma,
-                mode='constant',
-                cval=0.0,
+            if self.use_gpu:
+                return gaussian_filter_gpu(
+                    array,
+                    sigma=sigma,
+                    truncate=3.0)[roi_slices]
+            else:
+                return gaussian_filter(
+                    array,
+                    sigma=sigma,
+                    mode='constant',
+                    cval=0.0,
                 truncate=3.0)[roi_slices]
 
         elif mode == 'sphere':
