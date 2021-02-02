@@ -64,7 +64,7 @@ class AddLocalShapeDescriptor(BatchFilter):
     def setup(self):
 
         spec = self.spec[self.segmentation].copy()
-        spec.dtype = np.float32
+        spec.dtype = np.uint8
 
         self.voxel_size = spec.voxel_size
         self.provides(self.descriptor, spec)
@@ -130,7 +130,7 @@ class AddLocalShapeDescriptor(BatchFilter):
 
         # create mask array
         if self.mask and self.mask in request:
-            channel_mask = (segmentation_array.crop(descriptor_roi).data!=0).astype(np.float32)
+            channel_mask = (segmentation_array.crop(descriptor_roi).data!=0).astype(np.uint8)
             assert channel_mask.shape[-3:] == descriptor.shape[-3:]
             mask = np.array([channel_mask]*descriptor.shape[0])
             batch.arrays[self.mask] = Array(mask, descriptor_spec.copy())
