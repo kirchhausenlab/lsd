@@ -7,6 +7,7 @@ import time
 
 logger = logging.getLogger(__name__)
 
+
 class AddLocalShapeDescriptor(BatchFilter):
     '''Create a local segmentation shape discriptor to each voxel.
 
@@ -49,19 +50,21 @@ class AddLocalShapeDescriptor(BatchFilter):
         self.segmentation = segmentation
         self.descriptor = descriptor
         self.mask = mask
-        try:
-            self.sigma = tuple(sigma)
-        except:
-            self.sigma = (sigma,)*3
+        self.sigma = sigma
         self.mode = mode
         self.downsample = downsample
         self.voxel_size = None
         self.context = None
         self.skip = False
-
-        self.extractor = LsdExtractor(self.sigma, self.mode, self.downsample)
+        self.extractor = None
 
     def setup(self):
+        try:
+            self.sigma = tuple(self.sigma)
+        except TypeError:
+            self.sigma = (self.sigma,) * 3
+
+        self.extractor = LsdExtractor(self.sigma, self.mode, self.downsample)
 
         spec = self.spec[self.segmentation].copy()
         spec.dtype = np.uint8
@@ -73,11 +76,11 @@ class AddLocalShapeDescriptor(BatchFilter):
             self.provides(self.mask, spec.copy())
 
         if self.mode == 'gaussian':
-            self.context = tuple(s*3.0 for s in self.sigma)
+            self.context = tuple(s * 3.0 for s in self.sigma)
         elif self.mode == 'sphere':
             self.context = tuple(self.sigma)
         else:
-            raise RuntimeError("Unkown mode %s"%mode)
+            raise RuntimeError("Unkown mode %s" % self.mode)
 
     def prepare(self, request):
 
@@ -117,7 +120,7 @@ class AddLocalShapeDescriptor(BatchFilter):
         descriptor_roi = request[self.descriptor].roi
         voxel_roi_in_seg = (
             seg_roi.intersect(descriptor_roi) -
-            seg_roi.get_offset())/self.voxel_size
+            seg_roi.get_offset()) / self.voxel_size
 
         descriptor = self.extractor.get_descriptors(
             segmentation_array.data,
@@ -130,9 +133,11 @@ class AddLocalShapeDescriptor(BatchFilter):
 
         # create mask array
         if self.mask and self.mask in request:
-            channel_mask = (segmentation_array.crop(descriptor_roi).data!=0).astype(np.uint8)
+            channel_mask = (
+                segmentation_array.crop(descriptor_roi).data != 0).astype(
+                np.uint8)
             assert channel_mask.shape[-3:] == descriptor.shape[-3:]
-            mask = np.array([channel_mask]*descriptor.shape[0])
+            mask = np.array([channel_mask] * descriptor.shape[0])
             batch.arrays[self.mask] = Array(mask, descriptor_spec.copy())
 
         # crop segmentation back to original request
