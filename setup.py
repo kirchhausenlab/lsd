@@ -1,4 +1,3 @@
-from Cython.Distutils import build_ext
 from distutils.core import setup
 from distutils.extension import Extension
 
@@ -23,6 +22,5 @@ setup(
                 ],
                 extra_compile_args=['-O3'],
                 language='c++')
-        ],
-        cmdclass={'build_ext': build_ext}
+        ]
 )
