@@ -7,10 +7,14 @@ from scipy.ndimage.filters import convolve
 from numpy.lib.stride_tricks import as_strided
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
 
 def get_local_shape_descriptors(
         segmentation,
-        sigma,
+        sigma_0,
+        sigma_1,
+        sigma_2,
         voxel_size=None,
         roi=None,
         labels=None,
@@ -25,7 +29,7 @@ def get_local_shape_descriptors(
 
             A label array to compute the local shape descriptors for.
 
-        sigma (``tuple`` of ``float``):
+        sigma_{0,1,2} (``tuple`` of ``float``):
 
             The radius to consider for the local shape descriptor.
 
@@ -55,15 +59,19 @@ def get_local_shape_descriptors(
             Compute the local shape descriptor on a downsampled volume for
             faster processing. Defaults to 1 (no downsampling).
     '''
-    return LsdExtractor(sigma, mode, downsample).get_descriptors(
+    return LsdExtractor(sigma_0, sigma_1, sigma_2,
+                        mode, downsample).get_descriptors(
         segmentation,
         voxel_size,
         roi,
-        labels)
+        labels
+    )
+
 
 class LsdExtractor(object):
 
-    def __init__(self, sigma, mode='gaussian', downsample=1):
+    def __init__(self, sigma_0, sigma_1, sigma_2,
+                 mode='gaussian', downsample=1):
         '''
         Create an extractor for local shape descriptors. The extractor caches
         the data repeatedly needed for segmentations of the same size. If this
@@ -72,7 +80,7 @@ class LsdExtractor(object):
 
         Args:
 
-            sigma (``tuple`` of ``float``):
+            sigma_{0,1,2} (``tuple`` of ``float``):
 
                 The radius to consider for the local shape descriptor.
 
@@ -89,7 +97,10 @@ class LsdExtractor(object):
                 Compute the local shape descriptor on a downsampled volume for
                 faster processing. Defaults to 1 (no downsampling).
         '''
-        self.sigma = sigma
+        self.sigma_0 = sigma_0
+        self.sigma_1 = sigma_1
+        self.sigma_2 = sigma_2
+
         self.mode = mode
         self.downsample = downsample
         self.coords = {}
@@ -125,12 +136,12 @@ class LsdExtractor(object):
         dims = len(segmentation.shape)
 
         if voxel_size is None:
-            voxel_size = gp.Coordinate((1,)*dims)
+            voxel_size = gp.Coordinate((1,) * dims)
         else:
             voxel_size = gp.Coordinate(voxel_size)
 
         if roi is None:
-            roi = gp.Roi((0,)*dims, segmentation.shape)
+            roi = gp.Roi((0,) * dims, segmentation.shape)
 
         roi_slices = roi.to_slices()
 
@@ -138,25 +149,41 @@ class LsdExtractor(object):
             labels = np.unique(segmentation[roi_slices])
 
         # prepare full-res descriptor volumes for roi
-        descriptors = np.zeros((10,) + roi.get_shape(), dtype=np.float32)
+        descriptors = np.zeros((12,) + roi.get_shape(), dtype=np.float32)
 
         # get sub-sampled shape, roi, voxel size and sigma
         df = self.downsample
         logger.debug(
             "Downsampling segmentation %s with factor %f",
             segmentation.shape, df)
-        sub_shape = tuple(s/df for s in segmentation.shape)
-        sub_roi = roi/df
-        assert sub_roi*df == roi, (
+        sub_shape = tuple(s / df for s in segmentation.shape)
+        sub_roi = roi / df
+        assert sub_roi * df == roi, (
             "Segmentation shape %s is not a multiple of downsampling factor "
-            "%d (sub_roi=%s, roi=%s)."%(
+            "%d (sub_roi=%s, roi=%s)." % (
                 segmentation.shape, self.downsample,
                 sub_roi, roi))
-        sub_voxel_size = tuple(v*df for v in voxel_size)
-        sub_sigma_voxel = tuple(s/v for s, v in zip(self.sigma, sub_voxel_size))
+        sub_voxel_size = tuple(v * df for v in voxel_size)
+        sub_sigma_voxel_0 = tuple(
+            s / v for s,
+            v in zip(
+                self.sigma_0,
+                sub_voxel_size))
+        sub_sigma_voxel_1 = tuple(
+            s / v for s,
+            v in zip(
+                self.sigma_1,
+                sub_voxel_size))
+        sub_sigma_voxel_2 = tuple(
+            s / v for s,
+            v in zip(
+                self.sigma_2,
+                sub_voxel_size))
         logger.debug("Downsampled shape: %s", sub_shape)
         logger.debug("Downsampled voxel size: %s", sub_voxel_size)
-        logger.debug("Sigma in voxels: %s", sub_sigma_voxel)
+        logger.debug("Sigma_0 in voxels: %s", sub_sigma_voxel_0)
+        logger.debug("Sigma_1 in voxels: %s", sub_sigma_voxel_1)
+        logger.debug("Sigma_2 in voxels: %s", sub_sigma_voxel_2)
 
         # prepare coords volume (reuse if we already have one)
         if (sub_shape, sub_voxel_size) not in self.coords:
@@ -165,9 +192,18 @@ class LsdExtractor(object):
 
             self.coords[(sub_shape, sub_voxel_size)] = np.array(
                 np.meshgrid(
-                    np.arange(0, sub_shape[0]*sub_voxel_size[0], sub_voxel_size[0]),
-                    np.arange(0, sub_shape[1]*sub_voxel_size[1], sub_voxel_size[1]),
-                    np.arange(0, sub_shape[2]*sub_voxel_size[2], sub_voxel_size[2]),
+                    np.arange(
+                        0,
+                        sub_shape[0] * sub_voxel_size[0],
+                        sub_voxel_size[0]),
+                    np.arange(
+                        0,
+                        sub_shape[1] * sub_voxel_size[1],
+                        sub_voxel_size[1]),
+                    np.arange(
+                        0,
+                        sub_shape[2] * sub_voxel_size[2],
+                        sub_voxel_size[2]),
                     indexing='ij'),
                 dtype=np.float32)
 
@@ -181,22 +217,35 @@ class LsdExtractor(object):
 
             logger.debug("Creating shape descriptors for label %d", label)
 
-            mask = (segmentation==label).astype(np.float32)
+            mask = (segmentation == label).astype(np.float32)
             logger.debug("Label mask %s", mask.shape)
             sub_mask = mask[::df, ::df, ::df]
             logger.debug("Downsampled label mask %s", sub_mask.shape)
 
-            sub_count, sub_mean_offset, sub_variance, sub_pearson = self.__get_stats(
+            sub_count_0, sub_mean_offset_0 = self.__get_stats(
                 coords,
                 sub_mask,
-                sub_sigma_voxel,
+                sub_sigma_voxel_0,
+                sub_roi)
+            sub_count_1, sub_mean_offset_1 = self.__get_stats(
+                coords,
+                sub_mask,
+                sub_sigma_voxel_1,
+                sub_roi)
+            sub_count_2, sub_mean_offset_2 = self.__get_stats(
+                coords,
+                sub_mask,
+                sub_sigma_voxel_2,
                 sub_roi)
 
             sub_descriptor = np.concatenate([
-                sub_mean_offset,
-                sub_variance,
-                sub_pearson,
-                sub_count[None,:]])
+                sub_mean_offset_0,
+                sub_mean_offset_1,
+                sub_mean_offset_2,
+                sub_count_0[None, :],
+                sub_count_1[None, :],
+                sub_count_2[None, :],
+            ])
 
             logger.debug("Upscaling descriptors...")
             start = time.time()
@@ -205,31 +254,49 @@ class LsdExtractor(object):
 
             logger.debug("Accumulating descriptors...")
             start = time.time()
-            descriptors += descriptor*mask[roi_slices]
+            descriptors += descriptor * mask[roi_slices]
             logger.debug("%f seconds", time.time() - start)
 
         # normalize stats
 
         # get max possible mean offset for normalization
         if self.mode == 'gaussian':
-            # farthes voxel in context is 3*sigma away, but due to Gaussian
+            # farthest voxel in context is 3*sigma away, but due to Gaussian
             # weighting, sigma itself is probably a better upper bound
-            max_distance = np.array(
-                [s for s in self.sigma],
+            max_distance_0 = np.array(
+                [s for s in self.sigma_0],
+                dtype=np.float32)
+            max_distance_1 = np.array(
+                [s for s in self.sigma_1],
+                dtype=np.float32)
+            max_distance_2 = np.array(
+                [s for s in self.sigma_2],
                 dtype=np.float32)
         elif self.mode == 'sphere':
             # farthest voxel in context is sigma away, but this is almost
             # impossible to reach as offset -- let's take half sigma
-            max_distance = np.array(
-                [0.5*s for s in self.sigma],
+            max_distance_0 = np.array(
+                [0.5 * s for s in self.sigma_0],
+                dtype=np.float32)
+            max_distance_1 = np.array(
+                [0.5 * s for s in self.sigma_1],
+                dtype=np.float32)
+            max_distance_2 = np.array(
+                [0.5 * s for s in self.sigma_2],
                 dtype=np.float32)
 
         # mean offsets in [0, 1]
-        descriptors[[0, 1, 2]] = descriptors[[0, 1, 2]]/max_distance[:, None, None, None]*0.5 + 0.5
-        # pearsons in [0, 1]
-        descriptors[[6, 7, 8]] = descriptors[[6, 7, 8]]*0.5 + 0.5
+        descriptors[[0, 1, 2]] = descriptors[[0, 1, 2]] / \
+            max_distance_0[:, None, None, None] * 0.5 + 0.5
+        descriptors[[3, 4, 5]] = descriptors[[3, 4, 5]] / \
+            max_distance_1[:, None, None, None] * 0.5 + 0.5
+        descriptors[[6, 7, 8]] = descriptors[[6, 7, 8]] / \
+            max_distance_2[:, None, None, None] * 0.5 + 0.5
+
         # reset background to 0
-        descriptors[[0, 1, 2, 6, 7, 8]] *= (segmentation[roi_slices] != 0)
+        # descriptors[[0, 1, 2, 6, 7, 8]] *= (segmentation[roi_slices] != 0)
+        descriptors[[0, 1, 2, 3, 4, 5, 6, 7, 8]
+                    ] *= (segmentation[roi_slices] != 0)
 
         # clip outliers
         np.clip(descriptors, 0.0, 1.0, out=descriptors)
@@ -242,14 +309,14 @@ class LsdExtractor(object):
     def __get_stats(self, coords, mask, sigma_voxel, roi):
 
         # mask for object
-        masked_coords = coords*mask
+        masked_coords = coords * mask
 
         # number of inside voxels
         logger.debug("Counting inside voxels...")
         start = time.time()
         count = self.__aggregate(mask, sigma_voxel, self.mode, roi)
         # avoid division by zero
-        count[count==0] = 1
+        count[count == 0] = 1
         logger.debug("%f seconds", time.time() - start)
 
         # mean
@@ -265,37 +332,7 @@ class LsdExtractor(object):
         start = time.time()
         mean_offset = mean - coords[(slice(None),) + roi.to_slices()]
 
-        # covariance
-        logger.debug("Computing covariance...")
-        coords_outer = self.__outer_product(masked_coords)
-        covariance = np.array([
-            self.__aggregate(coords_outer[d], sigma_voxel, self.mode, roi)
-            # remove duplicate entries in covariance
-            # 0 1 2
-            # 3 4 5
-            # 6 7 8
-            for d in [0, 4, 8, 1, 2, 5]])
-        covariance /= count
-        covariance -= self.__outer_product(mean)[[0, 4, 8, 1, 2, 5]]
-        logger.debug("%f seconds", time.time() - start)
-
-        # variances of z, y, x coordinates
-        variance = covariance[[0, 1, 2]]
-        # Pearson coefficients of zy, zx, yx
-        pearson = covariance[[3, 4, 5]]
-
-        # normalize Pearson correlation coefficient
-        variance[variance<1e-3] = 1e-3 # numerical stability
-        pearson[0] /= np.sqrt(variance[0]*variance[1])
-        pearson[1] /= np.sqrt(variance[0]*variance[2])
-        pearson[2] /= np.sqrt(variance[1]*variance[2])
-
-        # normalize variances to interval [0, 1]
-        variance[0] /= self.sigma[0]**2
-        variance[1] /= self.sigma[1]**2
-        variance[2] /= self.sigma[2]**2
-
-        return count, mean_offset, variance, pearson
+        return count, mean_offset
 
     def __make_sphere(self, radius):
 
@@ -336,12 +373,12 @@ class LsdExtractor(object):
                 cval=0.0)[roi_slices]
 
         else:
-            raise RuntimeError("Unknown mode %s"%mode)
+            raise RuntimeError("Unknown mode %s" % mode)
 
     def get_context(self):
         '''Return the context needed to compute the LSDs.'''
         if self.mode == 'gaussian':
-            return tuple((3.0*s for s in self.sigma))
+            return tuple((3.0 * s for s in self.sigma))
         elif self.mode == 'sphere':
             return self.sigma
 
@@ -352,7 +389,7 @@ class LsdExtractor(object):
         '''
         k = array.shape[0]
         outer = np.einsum('i...,j...->ij...', array, array)
-        return outer.reshape((k**2,)+array.shape[1:])
+        return outer.reshape((k**2,) + array.shape[1:])
 
     def __upsample(self, array, f):
 
@@ -364,4 +401,4 @@ class LsdExtractor(object):
             (shape[0], shape[1], f, shape[2], f, shape[3], f),
             (stride[0], stride[1], 0, stride[2], 0, stride[3], 0))
 
-        return view.reshape(shape[0], shape[1]*f, shape[2]*f, shape[3]*f)
+        return view.reshape(shape[0], shape[1] * f, shape[2] * f, shape[3] * f)
