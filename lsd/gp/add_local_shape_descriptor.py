@@ -43,14 +43,20 @@ class AddLocalShapeDescriptor(BatchFilter):
             segmentation,
             descriptor,
             mask=None,
-            sigma=5.0,
+            sigma_0=4.0,
+            sigma_1=8.0,
+            sigma_2=16.0,
             mode='gaussian',
             downsample=1):
 
         self.segmentation = segmentation
         self.descriptor = descriptor
         self.mask = mask
-        self.sigma = sigma
+
+        self.sigma_0 = sigma_0
+        self.sigma_1 = sigma_1
+        self.sigma_2 = sigma_2
+
         self.mode = mode
         self.downsample = downsample
         self.voxel_size = None
@@ -60,11 +66,25 @@ class AddLocalShapeDescriptor(BatchFilter):
 
     def setup(self):
         try:
-            self.sigma = tuple(self.sigma)
+            self.sigma_0 = tuple(self.sigma_0)
         except TypeError:
-            self.sigma = (self.sigma,) * 3
+            self.sigma_0 = (self.sigma_0,) * 3
+        try:
+            self.sigma_1 = tuple(self.sigma_1)
+        except TypeError:
+            self.sigma_1 = (self.sigma_1,) * 3
+        try:
+            self.sigma_2 = tuple(self.sigma_2)
+        except TypeError:
+            self.sigma_2 = (self.sigma_2,) * 3
 
-        self.extractor = LsdExtractor(self.sigma, self.mode, self.downsample)
+        self.extractor = LsdExtractor(
+            self.sigma_0,
+            self.sigma_1,
+            self.sigma_2,
+            self.mode,
+            self.downsample
+        )
 
         spec = self.spec[self.segmentation].copy()
         spec.dtype = np.uint8
@@ -75,10 +95,13 @@ class AddLocalShapeDescriptor(BatchFilter):
         if self.mask:
             self.provides(self.mask, spec.copy())
 
+        max_sigma = [max(self.sigma_0[i], self.sigma_1[i], self.sigma_2[i])
+                     for i in range(3)]
+
         if self.mode == 'gaussian':
-            self.context = tuple(s * 3.0 for s in self.sigma)
+            self.context = tuple(s * 3.0 for s in max_sigma)
         elif self.mode == 'sphere':
-            self.context = tuple(self.sigma)
+            self.context = tuple(max_sigma)
         else:
             raise RuntimeError("Unkown mode %s" % self.mode)
 
