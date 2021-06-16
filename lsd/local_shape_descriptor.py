@@ -7,7 +7,7 @@ from scipy.ndimage.filters import convolve
 from numpy.lib.stride_tricks import as_strided
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 def get_local_shape_descriptors(
